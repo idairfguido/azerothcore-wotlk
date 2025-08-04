@@ -28,7 +28,6 @@
 #include "Pet.h"
 #include "PetPackets.h"
 #include "Player.h"
-#include "QueryHolder.h"
 #include "Spell.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
@@ -210,7 +209,7 @@ void WorldSession::HandlePetActionHelper(Unit* pet, ObjectGuid guid1, uint32 spe
                 case COMMAND_ATTACK:                        //spellId=1792  //ATTACK
                     {
                         // Can't attack if owner is pacified
-                        if (_player->HasAuraType(SPELL_AURA_MOD_PACIFY))
+                        if (_player->HasPacifyAura())
                         {
                             //pet->SendPetCastFail(spellId, SPELL_FAILED_PACIFIED);
                             //TODO: Send proper error message to client
@@ -233,7 +232,7 @@ void WorldSession::HandlePetActionHelper(Unit* pet, ObjectGuid guid1, uint32 spe
                                     return;
 
                         // Not let attack through obstructions
-                        bool checkLos = !DisableMgr::IsPathfindingEnabled(pet->GetMap()) ||
+                        bool checkLos = !sDisableMgr->IsPathfindingEnabled(pet->GetMap()) ||
                                         (TargetUnit->IsCreature() && (TargetUnit->ToCreature()->isWorldBoss() || TargetUnit->ToCreature()->IsDungeonBoss()));
 
                         if (checkLos && !pet->IsWithinLOSInMap(TargetUnit))
@@ -301,7 +300,7 @@ void WorldSession::HandlePetActionHelper(Unit* pet, ObjectGuid guid1, uint32 spe
                                 //dismissing a summoned pet is like killing them (this prevents returning a soulshard...)
                                 pet->setDeathState(DeathState::Corpse);
                         }
-                        else if (pet->HasUnitTypeMask(UNIT_MASK_MINION | UNIT_MASK_SUMMON | UNIT_MASK_GUARDIAN | UNIT_MASK_CONTROLABLE_GUARDIAN))
+                        else if (pet->HasUnitTypeMask(UNIT_MASK_MINION | UNIT_MASK_SUMMON | UNIT_MASK_GUARDIAN | UNIT_MASK_CONTROLLABLE_GUARDIAN))
                         {
                             pet->ToTempSummon()->UnSummon();
                         }
@@ -433,8 +432,14 @@ void WorldSession::HandlePetActionHelper(Unit* pet, ObjectGuid guid1, uint32 spe
 
                     spell->prepare(&(spell->m_targets));
 
-                    charmInfo->SetForcedSpell(0);
-                    charmInfo->SetForcedTargetGUID();
+                    // spell->prepare() can delete charm info.
+                    // Let's refresh the pointer.
+                    charmInfo = pet->GetCharmInfo();
+                    if (charmInfo)
+                    {
+                        charmInfo->SetForcedSpell(0);
+                        charmInfo->SetForcedTargetGUID();
+                    }
                 }
                 else if (pet->ToPet() && (result == SPELL_FAILED_LINE_OF_SIGHT || result == SPELL_FAILED_OUT_OF_RANGE))
                 {
@@ -442,7 +447,10 @@ void WorldSession::HandlePetActionHelper(Unit* pet, ObjectGuid guid1, uint32 spe
                     bool haspositiveeffect = false;
 
                     if (!unit_target)
+                    {
+                        delete spell;
                         return;
+                    }
 
                     // search positive effects for spell
                     for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
@@ -468,7 +476,7 @@ void WorldSession::HandlePetActionHelper(Unit* pet, ObjectGuid guid1, uint32 spe
                     spell->finish(false);
                     delete spell;
 
-                    if (_player->HasAuraType(SPELL_AURA_MOD_PACIFY))
+                    if (_player->HasPacifyAura())
                         return;
 
                     bool tempspellIsPositive = false;
@@ -654,7 +662,7 @@ bool WorldSession::CheckStableMaster(ObjectGuid guid)
     // spell case or GM
     if (guid == GetPlayer()->GetGUID())
     {
-        if (!GetPlayer()->IsGameMaster() && !GetPlayer()->HasAuraType(SPELL_AURA_OPEN_STABLE))
+        if (!GetPlayer()->IsGameMaster() && !GetPlayer()->HasOpenStableAura())
         {
             LOG_DEBUG("network.opcode", "Player ({}) attempt open stable in cheating way.", guid.ToString());
             return false;

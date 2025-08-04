@@ -52,7 +52,7 @@ void UnitAI::DoMeleeAttackIfReady()
     if (me->isAttackReady())
     {
         // xinef: prevent base and off attack in same time, delay attack at 0.2 sec
-        if (me->haveOffhandWeapon())
+        if (me->HasOffhandWeaponForAttack())
             if (me->getAttackTimer(OFF_ATTACK) < ATTACK_DISPLAY_DELAY)
                 me->setAttackTimer(OFF_ATTACK, ATTACK_DISPLAY_DELAY);
 
@@ -60,7 +60,7 @@ void UnitAI::DoMeleeAttackIfReady()
         me->resetAttackTimer();
     }
 
-    if (me->haveOffhandWeapon() && me->isAttackReady(OFF_ATTACK))
+    if (me->HasOffhandWeaponForAttack() && me->isAttackReady(OFF_ATTACK))
     {
         // xinef: delay main hand attack if both will hit at the same time (players code)
         if (me->getAttackTimer(BASE_ATTACK) < ATTACK_DISPLAY_DELAY)
@@ -191,8 +191,26 @@ SpellCastResult UnitAI::DoCast(uint32 spellId)
             {
                 if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId))
                 {
-                    bool playerOnly = spellInfo->HasAttribute(SPELL_ATTR3_ONLY_ON_PLAYER);
-                    target = SelectTarget(SelectTargetMethod::Random, 0, spellInfo->GetMaxRange(false), playerOnly);
+                    DefaultTargetSelector targetSelector(me, spellInfo->GetMaxRange(false), false, true, 0);
+                    target = SelectTarget(SelectTargetMethod::Random, 0, [&](Unit* target) {
+                        if (!target)
+                            return false;
+
+                        if (target->IsPlayer())
+                        {
+                            if (spellInfo->HasAttribute(SPELL_ATTR5_NOT_ON_PLAYER))
+                                return false;
+                        }
+                        else
+                        {
+                            if (spellInfo->HasAttribute(SPELL_ATTR3_ONLY_ON_PLAYER))
+                                return false;
+
+                            if (spellInfo->HasAttribute(SPELL_ATTR5_NOT_ON_PLAYER_CONTROLLED_NPC) && target->IsControlledByPlayer())
+                                return false;
+                        }
+                        return targetSelector(target);
+                    });
                 }
                 break;
             }
@@ -206,12 +224,30 @@ SpellCastResult UnitAI::DoCast(uint32 spellId)
             {
                 if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId))
                 {
-                    bool playerOnly = spellInfo->HasAttribute(SPELL_ATTR3_ONLY_ON_PLAYER);
                     float range = spellInfo->GetMaxRange(false);
 
-                    DefaultTargetSelector targetSelector(me, range, playerOnly, true, -(int32)spellId);
-                    if (!(spellInfo->AuraInterruptFlags & AURA_INTERRUPT_FLAG_NOT_VICTIM)
-                            && targetSelector(me->GetVictim()))
+                    DefaultTargetSelector defaultTargetSelector(me, range, false, true, -(int32)spellId);
+                    auto targetSelector = [&](Unit* target) {
+                        if (!target)
+                            return false;
+
+                        if (target->IsPlayer())
+                        {
+                            if (spellInfo->HasAttribute(SPELL_ATTR5_NOT_ON_PLAYER))
+                                return false;
+                        }
+                        else
+                        {
+                            if (spellInfo->HasAttribute(SPELL_ATTR3_ONLY_ON_PLAYER))
+                                return false;
+
+                            if (spellInfo->HasAttribute(SPELL_ATTR5_NOT_ON_PLAYER_CONTROLLED_NPC) && target->IsControlledByPlayer())
+                                return false;
+                        }
+                        return defaultTargetSelector(target);
+                    };
+
+                    if (!(spellInfo->AuraInterruptFlags & AURA_INTERRUPT_FLAG_NOT_VICTIM) && targetSelector(me->GetVictim()))
                         target = me->GetVictim();
                     else
                         target = SelectTarget(SelectTargetMethod::Random, 0, targetSelector);

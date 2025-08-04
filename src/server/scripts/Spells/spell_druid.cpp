@@ -60,6 +60,7 @@ enum DruidSpells
     SPELL_DRUID_ENRAGE                      = 5229,
     SPELL_DRUID_ENRAGED_DEFENSE             = 70725,
     SPELL_DRUID_ITEM_T10_FERAL_4P_BONUS     = 70726,
+    SPELL_DRUID_MOONGLADE_2P_BONUS          = 37286
 };
 
 enum DruidIcons
@@ -936,7 +937,7 @@ class spell_dru_starfall_dummy : public SpellScript
             return;
         }
 
-        // Any effect which causes you to lose control of your character will supress the starfall effect.
+        // Any effect which causes you to lose control of your character will suppress the starfall effect.
         if (caster->HasUnitState(UNIT_STATE_CONTROLLED))
             return;
 
@@ -1017,7 +1018,7 @@ class spell_dru_swift_flight_passive : public AuraScript
 
     void Register() override
     {
-        DoEffectCalcAmount += AuraEffectCalcAmountFn(spell_dru_swift_flight_passive::CalculateAmount, EFFECT_1, SPELL_AURA_MOD_INCREASE_VEHICLE_FLIGHT_SPEED);
+        DoEffectCalcAmount += AuraEffectCalcAmountFn(spell_dru_swift_flight_passive::CalculateAmount, EFFECT_1, SPELL_AURA_MOD_INCREASE_FLIGHT_SPEED);
     }
 };
 
@@ -1194,6 +1195,60 @@ class spell_dru_moonkin_form_passive_proc : public AuraScript
     }
 };
 
+// -774 - Rejuvenation
+class spell_dru_rejuvenation_moonglade_2_set : public AuraScript
+{
+    PrepareAuraScript(spell_dru_rejuvenation_moonglade_2_set);
+
+    bool Validate(SpellInfo const* /*spellInfo*/) override
+    {
+        return ValidateSpellInfo({ SPELL_DRUID_MOONGLADE_2P_BONUS });
+    }
+
+    bool Load() override
+    {
+        _casterGUID.Clear();
+        return true;
+    }
+
+    void OnApply(AuraEffect const*  /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        if (Player* caster = ObjectAccessor::FindPlayer(GetCasterGUID()))
+            if (caster->HasAura(SPELL_DRUID_MOONGLADE_2P_BONUS))
+                {
+                    Player* target = GetTarget()->ToPlayer();
+                    if (!target)
+                        return;
+
+                    _casterGUID = GetCasterGUID();
+                    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(SPELL_DRUID_MOONGLADE_2P_BONUS);
+                    target->ApplyRatingMod(CR_DODGE, spellInfo->Effects[EFFECT_0].CalcValue(), true); // 35 rating
+                }
+    }
+
+    void OnRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        if (_casterGUID)
+        {
+            Player* target = GetTarget()->ToPlayer();
+            if (!target)
+                return;
+
+            SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(SPELL_DRUID_MOONGLADE_2P_BONUS);
+            target->ApplyRatingMod(CR_DODGE, spellInfo->Effects[EFFECT_0].CalcValue(), false); // 35 rating
+        }
+    }
+
+    void Register() override
+    {
+        AfterEffectApply += AuraEffectApplyFn(spell_dru_rejuvenation_moonglade_2_set::OnApply, EFFECT_0, SPELL_AURA_PERIODIC_HEAL, AURA_EFFECT_HANDLE_REAL);
+        AfterEffectRemove += AuraEffectRemoveFn(spell_dru_rejuvenation_moonglade_2_set::OnRemove, EFFECT_0, SPELL_AURA_PERIODIC_HEAL, AURA_EFFECT_HANDLE_REAL);
+    }
+
+private:
+    ObjectGuid _casterGUID;
+};
+
 void AddSC_druid_spell_scripts()
 {
     RegisterSpellScript(spell_dru_bear_form_passive);
@@ -1229,4 +1284,5 @@ void AddSC_druid_spell_scripts()
     RegisterSpellScript(spell_dru_t10_restoration_4p_bonus);
     RegisterSpellScript(spell_dru_wild_growth);
     RegisterSpellScript(spell_dru_moonkin_form_passive_proc);
+    RegisterSpellScript(spell_dru_rejuvenation_moonglade_2_set);
 }

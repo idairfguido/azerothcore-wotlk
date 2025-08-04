@@ -16,11 +16,9 @@
  */
 
 #include "Battleground.h"
-#include "BattlegroundEY.h"
 #include "BattlegroundIC.h"
 #include "BattlegroundMgr.h"
 #include "BattlegroundSA.h"
-#include "BattlegroundWS.h"
 #include "CellImpl.h"
 #include "Chat.h"
 #include "Common.h"
@@ -57,8 +55,6 @@
 #include "Totem.h"
 #include "Transport.h"
 #include "Unit.h"
-#include "UpdateData.h"
-#include "UpdateMask.h"
 #include "Util.h"
 #include "Vehicle.h"
 #include "World.h"
@@ -1156,13 +1152,29 @@ void Spell::EffectJumpDest(SpellEffIndex effIndex)
 
 void Spell::CalculateJumpSpeeds(uint8 i, float dist, float& speedXY, float& speedZ)
 {
-    if (m_spellInfo->Effects[i].MiscValue)
-        speedZ = float(m_spellInfo->Effects[i].MiscValue) / 10;
-    else if (m_spellInfo->Effects[i].MiscValueB)
-        speedZ = float(m_spellInfo->Effects[i].MiscValueB) / 10;
+    float runSpeed = m_caster->IsControlledByPlayer() ? playerBaseMoveSpeed[MOVE_RUN] : baseMoveSpeed[MOVE_RUN];
+    if (Creature* creature = m_caster->ToCreature())
+        runSpeed *= creature->GetCreatureTemplate()->speed_run;
+
+    float multiplier = m_spellInfo->Effects[i].ValueMultiplier;
+    if (multiplier <= 0.0f)
+        multiplier = 1.0f;
+
+    speedXY = std::min(runSpeed * 3.0f * multiplier, std::max(28.0f, m_caster->GetSpeed(MOVE_RUN) * 4.0f));
+
+    float duration = dist / speedXY;
+    float durationSqr = duration * duration;
+    float minHeight = m_spellInfo->Effects[i].MiscValue  ? m_spellInfo->Effects[i].MiscValue  / 10.0f :    0.5f; // Lower bound is blizzlike
+    float maxHeight = m_spellInfo->Effects[i].MiscValueB ? m_spellInfo->Effects[i].MiscValueB / 10.0f : 1000.0f; // Upper bound is unknown
+    float height;
+    if (durationSqr < minHeight * 8 / Movement::gravity)
+        height = minHeight;
+    else if (durationSqr > maxHeight * 8 / Movement::gravity)
+        height = maxHeight;
     else
-        speedZ = 10.0f;
-    speedXY = dist * 10.0f / speedZ;
+        height = Movement::gravity * durationSqr / 8;
+
+    speedZ = std::sqrt(2 * Movement::gravity * height);
 }
 
 void Spell::EffectTeleportUnits(SpellEffIndex /*effIndex*/)
@@ -1747,13 +1759,13 @@ void Spell::DoCreateItem(uint8 /*effIndex*/, uint32 itemId)
         }
 
         // set the "Crafted by ..." property of the item
-        if (pItem->GetTemplate()->HasSignature())
+        if (m_caster->IsPlayer() && pItem->GetTemplate()->HasSignature())
             pItem->SetGuidValue(ITEM_FIELD_CREATOR, player->GetGUID());
 
         // send info to the client
         player->SendNewItem(pItem, addNumber, true, SelfCast);
 
-        sScriptMgr->OnCreateItem(player, pItem, addNumber);
+        sScriptMgr->OnPlayerCreateItem(player, pItem, addNumber);
 
         // we succeeded in creating at least one item, so a levelup is possible
         if (SelfCast)
@@ -1872,6 +1884,12 @@ void Spell::EffectEnergize(SpellEffIndex effIndex)
         return;
     if (!unitTarget->IsAlive())
         return;
+
+    if (unitTarget->HasUnitState(UNIT_STATE_ISOLATED))
+    {
+        m_caster->SendSpellDamageImmune(unitTarget, GetSpellInfo()->Id);
+        return;
+    }
 
     if (m_spellInfo->Effects[effIndex].MiscValue < 0 || m_spellInfo->Effects[effIndex].MiscValue >= int8(MAX_POWERS))
         return;
@@ -2314,6 +2332,10 @@ void Spell::EffectSummonType(SpellEffIndex effIndex)
         return;
 
     uint32 entry = m_spellInfo->Effects[effIndex].MiscValue;
+
+    if (m_spellValue->MiscVal[effIndex])
+        entry = m_spellValue->MiscVal[effIndex];
+
     if (!entry)
         return;
 
@@ -2709,7 +2731,7 @@ void Spell::EffectAddFarsight(SpellEffIndex effIndex)
     // Remove old farsight if exist
     bool updateViewerVisibility = m_caster->RemoveDynObject(m_spellInfo->Id);
 
-    DynamicObject* dynObj = new DynamicObject(true);
+    DynamicObject* dynObj = new DynamicObject(false);
     if (!dynObj->CreateDynamicObject(m_caster->GetMap()->GenerateLowGuid<HighGuid::DynamicObject>(), m_caster, m_spellInfo->Id, *destTarget, radius, DYNAMIC_OBJECT_FARSIGHT_FOCUS))
     {
         delete dynObj;
@@ -3406,11 +3428,6 @@ void Spell::EffectWeaponDmg(SpellEffIndex effIndex)
                         spell_bonus += int32(0.08f * m_caster->GetTotalAttackPowerValue(BASE_ATTACK));
                         spell_bonus += int32(0.13f * m_caster->SpellBaseDamageBonusDone(m_spellInfo->GetSchoolMask()));
                         break;
-                    case 42463: // Seals of the Pure for Seal of Vengeance/Corruption
-                    case 53739:
-                        if (AuraEffect const* sealsOfPure = m_caster->GetAuraEffect(SPELL_AURA_ADD_PCT_MODIFIER, SPELLFAMILY_PALADIN, 25, 0))
-                            AddPct(totalDamagePercentMod, sealsOfPure->GetAmount());
-                        break;
                     case 53385:  // Divine Storm deals normalized damage
                         normalized = true;
                         break;
@@ -3476,7 +3493,7 @@ void Spell::EffectWeaponDmg(SpellEffIndex effIndex)
 
                     // Glyph of Blood Strike
                     if (m_caster->GetAuraEffect(59332, EFFECT_0))
-                        if (unitTarget->HasAuraType(SPELL_AURA_MOD_DECREASE_SPEED))
+                        if (unitTarget->HasDecreaseSpeedAura())
                             AddPct(totalDamagePercentMod, 20.0f);
                     break;
                 }
@@ -3510,9 +3527,7 @@ void Spell::EffectWeaponDmg(SpellEffIndex effIndex)
                 // Blood-Caked Strike - Blood-Caked Blade
                 if (m_spellInfo->SpellIconID == 1736)
                 {
-                    int32 weaponDamage = m_caster->CalculateDamage(m_attackType, false, true);
-                    ApplyPct(weaponDamage, std::min(uint32(3), unitTarget->GetDiseasesByCaster(m_caster->GetGUID())) * 12.5f);
-                    spell_bonus = weaponDamage;
+                    AddPct(totalDamagePercentMod, unitTarget->GetDiseasesByCaster(m_caster->GetGUID()) * 50.0f);
                     break;
                 }
                 // Heart Strike
@@ -3559,30 +3574,26 @@ void Spell::EffectWeaponDmg(SpellEffIndex effIndex)
         }
     }
 
-    // apply to non-weapon bonus weapon total pct effect, weapon total flat effect included in weapon damage
-    if (fixed_bonus || spell_bonus)
+    bool const isPhysical = (m_spellSchoolMask & SPELL_SCHOOL_MASK_NORMAL);
+    if (isPhysical && (fixed_bonus || spell_bonus))
     {
         UnitMods unitMod;
         switch (m_attackType)
         {
-            default:
-            case BASE_ATTACK:
-                unitMod = UNIT_MOD_DAMAGE_MAINHAND;
-                break;
-            case OFF_ATTACK:
-                unitMod = UNIT_MOD_DAMAGE_OFFHAND;
-                break;
-            case RANGED_ATTACK:
-                unitMod = UNIT_MOD_DAMAGE_RANGED;
-                break;
+        default:
+        case BASE_ATTACK:
+            unitMod = UNIT_MOD_DAMAGE_MAINHAND;
+            break;
+        case OFF_ATTACK:
+            unitMod = UNIT_MOD_DAMAGE_OFFHAND;
+            break;
+        case RANGED_ATTACK:
+            unitMod = UNIT_MOD_DAMAGE_RANGED;
+            break;
         }
-
-        if (m_spellSchoolMask & SPELL_SCHOOL_MASK_NORMAL)
-        {
-            float weapon_total_pct = m_caster->GetModifierValue(unitMod, TOTAL_PCT);
-            fixed_bonus = int32(fixed_bonus * weapon_total_pct);
-            spell_bonus = int32(spell_bonus * weapon_total_pct);
-        }
+        float weapon_total_pct = m_caster->GetModifierValue(unitMod, TOTAL_PCT);
+        fixed_bonus = int32(fixed_bonus * weapon_total_pct);
+        spell_bonus = int32(spell_bonus * weapon_total_pct);
     }
 
     int32 weaponDamage = 0;
@@ -3590,15 +3601,11 @@ void Spell::EffectWeaponDmg(SpellEffIndex effIndex)
     if (m_caster->GetEntry() == 27893)
     {
         if (Unit* owner = m_caster->GetOwner())
-            weaponDamage = owner->CalculateDamage(m_attackType, normalized, true);
-    }
-    else if (m_spellInfo->Id == 5019) // Wands
-    {
-        weaponDamage = m_caster->CalculateDamage(m_attackType, true, false);
+            weaponDamage = owner->CalculateDamage(m_attackType, normalized, isPhysical);
     }
     else
     {
-        weaponDamage = m_caster->CalculateDamage(m_attackType, normalized, true);
+        weaponDamage = m_caster->CalculateDamage(m_attackType, normalized, isPhysical);
     }
 
     // Sequence is important
@@ -3666,6 +3673,12 @@ void Spell::EffectHealMaxHealth(SpellEffIndex /*effIndex*/)
 
     if (!unitTarget || !unitTarget->IsAlive())
         return;
+
+    if (unitTarget->HasUnitState(UNIT_STATE_ISOLATED))
+    {
+        m_caster->SendSpellDamageImmune(unitTarget, GetSpellInfo()->Id);
+        return;
+    }
 
     int32 addhealth = 0;
 
@@ -3924,7 +3937,7 @@ void Spell::EffectScriptEffect(SpellEffIndex effIndex)
                         {
                             int32 basepoints0 = damage;
                             // Cast Absorb on totems
-                            for (uint8 slot = SUMMON_SLOT_TOTEM; slot < MAX_TOTEM_SLOT; ++slot)
+                            for (uint8 slot = SUMMON_SLOT_TOTEM_FIRE; slot < MAX_TOTEM_SLOT; ++slot)
                             {
                                 if (!unitTarget->m_SummonSlot[slot])
                                     continue;
@@ -4171,7 +4184,7 @@ void Spell::EffectStuck(SpellEffIndex /*effIndex*/)
     // xinef: if player is dead - teleport to graveyard
     if (!target->IsAlive())
     {
-        if (target->HasAuraType(SPELL_AURA_PREVENT_RESURRECTION))
+        if (target->HasPreventResurectionAura())
             return;
 
         // xinef: player is in corpse
@@ -4747,8 +4760,8 @@ void Spell::EffectQuestComplete(SpellEffIndex effIndex)
         uint16 logSlot = player->FindQuestSlot(questId);
         if (logSlot < MAX_QUEST_LOG_SIZE)
             player->AreaExploredOrEventHappens(questId);
-        else if (player->CanTakeQuest(quest, false))    // never rewarded before
-            player->CompleteQuest(questId);             // quest not in log - for internal use
+        else if (player->CanTakeQuest(quest, false)) // Check if the quest has already been turned in.
+            player->SetRewardedQuest(questId);           // If not, set status to rewarded without broadcasting it to client.
     }
 }
 
@@ -5024,7 +5037,7 @@ void Spell::EffectLeapBack(SpellEffIndex effIndex)
     float speedxy = m_spellInfo->Effects[effIndex].MiscValue / 10.0f;
     float speedz = damage / 10.0f;
     //1891: Disengage
-    m_caster->JumpTo(speedxy, speedz, m_spellInfo->SpellFamilyName != SPELLFAMILY_HUNTER);
+    unitTarget->JumpTo(speedxy, speedz, m_spellInfo->SpellFamilyName != SPELLFAMILY_HUNTER);
 
     if (m_caster->IsPlayer())
     {
@@ -5232,7 +5245,7 @@ void Spell::EffectDestroyAllTotems(SpellEffIndex /*effIndex*/)
         return;
 
     int32 mana = 0;
-    for (uint8 slot = SUMMON_SLOT_TOTEM; slot < MAX_TOTEM_SLOT; ++slot)
+    for (uint8 slot = SUMMON_SLOT_TOTEM_FIRE; slot < MAX_TOTEM_SLOT; ++slot)
     {
         if (!m_caster->m_SummonSlot[slot])
             continue;
@@ -5558,6 +5571,10 @@ void Spell::EffectSkinPlayerCorpse(SpellEffIndex /*effIndex*/)
         return;
 
     unitTarget->ToPlayer()->RemovedInsignia(m_caster->ToPlayer());
+
+    // We have a corpse object as the target.
+    // This target was deleted in RemovedInsignia() -> ConvertCorpseToBones().
+    m_targets.RemoveObjectTarget();
 }
 
 void Spell::EffectStealBeneficialBuff(SpellEffIndex effIndex)

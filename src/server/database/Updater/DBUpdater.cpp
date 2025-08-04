@@ -20,10 +20,10 @@
 #include "Config.h"
 #include "DatabaseEnv.h"
 #include "DatabaseLoader.h"
-#include "GitRevision.h"
 #include "Log.h"
 #include "StartProcess.h"
 #include "UpdateFetcher.h"
+#include "QueryResult.h"
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -517,7 +517,8 @@ void DBUpdater<T>::ApplyFile(DatabaseWorkerPool<T>& pool, std::string const& hos
             "If you are a developer, please fix your sql query.",
             path.generic_string(), pool.GetConnectionInfo()->database);
 
-        throw UpdateException("update failed");
+        if (!sConfigMgr->isDryRun())
+            throw UpdateException("update failed");
     }
 }
 

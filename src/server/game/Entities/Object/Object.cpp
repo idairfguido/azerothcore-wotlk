@@ -1050,7 +1050,7 @@ void MovementInfo::OutDebug()
 WorldObject::WorldObject(bool isWorldObject) : WorldLocation(),
     LastUsedScriptID(0), m_name(""), m_isActive(false), m_visibilityDistanceOverride(), m_isWorldObject(isWorldObject), m_zoneScript(nullptr),
     _zoneId(0), _areaId(0), _floorZ(INVALID_HEIGHT), _outdoors(false), _liquidData(), _updatePositionData(false), m_transport(nullptr),
-    m_currMap(nullptr), m_InstanceId(0), m_phaseMask(PHASEMASK_NORMAL), m_useCombinedPhases(true), m_notifyflags(0), m_executed_notifies(0)
+    m_currMap(nullptr), _heartbeatTimer(HEARTBEAT_INTERVAL), m_InstanceId(0), m_phaseMask(PHASEMASK_NORMAL), m_useCombinedPhases(true), m_notifyflags(0), m_executed_notifies(0)
 {
     m_serverSideVisibility.SetValue(SERVERSIDE_VISIBILITY_GHOST, GHOST_VISIBILITY_ALIVE | GHOST_VISIBILITY_GHOST);
     m_serverSideVisibilityDetect.SetValue(SERVERSIDE_VISIBILITY_GHOST, GHOST_VISIBILITY_ALIVE);
@@ -1058,28 +1058,18 @@ WorldObject::WorldObject(bool isWorldObject) : WorldLocation(),
     sScriptMgr->OnWorldObjectCreate(this);
 }
 
-void WorldObject::Update(uint32 time_diff)
+void WorldObject::Update(uint32 diff)
 {
-    sScriptMgr->OnWorldObjectUpdate(this, time_diff);
-}
+    m_Events.Update(diff);
 
-void WorldObject::SetWorldObject(bool on)
-{
-    if (!IsInWorld())
-        return;
+    _heartbeatTimer -= Milliseconds(diff);
+    while (_heartbeatTimer <= 0ms)
+    {
+        _heartbeatTimer += HEARTBEAT_INTERVAL;
+        Heartbeat();
+    }
 
-    GetMap()->AddObjectToSwitchList(this, on);
-}
-
-bool WorldObject::IsWorldObject() const
-{
-    if (m_isWorldObject)
-        return true;
-
-    if (ToCreature() && ToCreature()->m_isTempWorldObject)
-        return true;
-
-    return false;
+    sScriptMgr->OnWorldObjectUpdate(this, diff);
 }
 
 void WorldObject::setActive(bool on)
@@ -1134,6 +1124,8 @@ void WorldObject::CleanupsBeforeDelete(bool /*finalCleanup*/)
 {
     if (IsInWorld())
         RemoveFromWorld();
+
+    m_Events.KillAllEvents(false);                      // non-delatable (currently cast spells) will not deleted now but it will deleted at call in Map::RemoveAllObjectsInRemoveList
 }
 
 void WorldObject::_Create(ObjectGuid::LowType guidlow, HighGuid guidhigh, uint32 phaseMask)
@@ -1177,6 +1169,7 @@ void WorldObject::AddToWorld()
 {
     Object::AddToWorld();
     GetMap()->GetZoneAndAreaId(GetPhaseMask(), _zoneId, _areaId, GetPositionX(), GetPositionY(), GetPositionZ());
+    GetMap()->AddObjectToPendingUpdateList(this);
 }
 
 void WorldObject::RemoveFromWorld()
@@ -1932,8 +1925,8 @@ bool WorldObject::CanDetectInvisibilityOf(WorldObject const* obj) const
         bool isPermInvisibleCreature = false;
         if (Creature const* baseObj = ToCreature())
         {
-            auto auraEffects = baseObj->GetAuraEffectsByType(SPELL_AURA_MOD_INVISIBILITY);
-            for (auto const effect : auraEffects)
+            Unit::AuraEffectList const& auraEffects = baseObj->GetAuraEffectsByType(SPELL_AURA_MOD_INVISIBILITY);
+            for (AuraEffect* const effect : auraEffects)
             {
                 if (SpellInfo const* spell = effect->GetSpellInfo())
                 {
@@ -2263,7 +2256,9 @@ TempSummon* Map::SummonCreature(uint32 entry, Position const& pos, SummonPropert
 
     summon->InitSummon();
 
-    //ObjectAccessor::UpdateObjectVisibility(summon);
+    // call MoveInLineOfSight for nearby creatures
+    Acore::AIRelocationNotifier notifier(*summon);
+    Cell::VisitAllObjects(summon, notifier, GetVisibilityRange());
 
     return summon;
 }
@@ -2497,10 +2492,24 @@ void WorldObject::GetGameObjectListWithEntryInGrid(std::list<GameObject*>& gameo
     Cell::VisitGridObjects(this, searcher, maxSearchRange);
 }
 
+void WorldObject::GetGameObjectListWithEntryInGrid(std::list<GameObject*>& gameobjectList, std::vector<uint32> const& entries, float maxSearchRange) const
+{
+    Acore::AllGameObjectsMatchingOneEntryInRange check(this, entries, maxSearchRange);
+    Acore::GameObjectListSearcher searcher(this, gameobjectList, check);
+    Cell::VisitGridObjects(this, searcher, maxSearchRange);
+}
+
 void WorldObject::GetCreatureListWithEntryInGrid(std::list<Creature*>& creatureList, uint32 entry, float maxSearchRange) const
 {
     Acore::AllCreaturesOfEntryInRange check(this, entry, maxSearchRange);
     Acore::CreatureListSearcher<Acore::AllCreaturesOfEntryInRange> searcher(this, creatureList, check);
+    Cell::VisitGridObjects(this, searcher, maxSearchRange);
+}
+
+void WorldObject::GetCreatureListWithEntryInGrid(std::list<Creature*>& creatureList, std::vector<uint32> const& entries, float maxSearchRange) const
+{
+    Acore::AllCreaturesMatchingOneEntryInRange check(this, entries, maxSearchRange);
+    Acore::CreatureListSearcher searcher(this, creatureList, check);
     Cell::VisitGridObjects(this, searcher, maxSearchRange);
 }
 
@@ -3083,18 +3092,9 @@ void WorldObject::BuildUpdate(UpdateDataMapType& data_map, UpdatePlayerSet& play
 
 void WorldObject::GetCreaturesWithEntryInRange(std::list<Creature*>& creatureList, float radius, uint32 entry)
 {
-    CellCoord pair(Acore::ComputeCellCoord(this->GetPositionX(), this->GetPositionY()));
-    Cell cell(pair);
-    cell.SetNoCreate();
-
     Acore::AllCreaturesOfEntryInRange check(this, entry, radius);
     Acore::CreatureListSearcher<Acore::AllCreaturesOfEntryInRange> searcher(this, creatureList, check);
-
-    TypeContainerVisitor<Acore::CreatureListSearcher<Acore::AllCreaturesOfEntryInRange>, WorldTypeMapContainer> world_visitor(searcher);
-    cell.Visit(pair, world_visitor, *(this->GetMap()), *this, radius);
-
-    TypeContainerVisitor<Acore::CreatureListSearcher<Acore::AllCreaturesOfEntryInRange>, GridTypeMapContainer> grid_visitor(searcher);
-    cell.Visit(pair, grid_visitor, *(this->GetMap()), *this, radius);
+    Cell::VisitAllObjects(this, searcher, radius);
 }
 
 void WorldObject::AddToObjectUpdate()
@@ -3126,7 +3126,7 @@ float WorldObject::GetMapHeight(float x, float y, float z, bool vmap/* = true*/,
 float WorldObject::GetMapWaterOrGroundLevel(float x, float y, float z, float* ground/* = nullptr*/) const
 {
     return GetMap()->GetWaterOrGroundLevel(GetPhaseMask(), x, y, z, ground,
-        IsUnit() ? !static_cast<Unit const*>(this)->HasAuraType(SPELL_AURA_WATER_WALK) : false,
+        IsUnit() ? !static_cast<Unit const*>(this)->HasWaterWalkAura() : false,
         std::max(GetCollisionHeight(),  Z_OFFSET_FIND_HEIGHT));
 }
 
@@ -3215,4 +3215,28 @@ GuidUnorderedSet const& WorldObject::GetAllowedLooters() const
 void WorldObject::RemoveAllowedLooter(ObjectGuid guid)
 {
     _allowedLooters.erase(guid);
+}
+
+bool WorldObject::IsUpdateNeeded()
+{
+    if (isActiveObject())
+        return true;
+
+    return false;
+}
+
+bool WorldObject::CanBeAddedToMapUpdateList()
+{
+    switch (GetTypeId())
+    {
+    case TYPEID_UNIT:
+        return IsCreature();
+    case TYPEID_DYNAMICOBJECT:
+    case TYPEID_GAMEOBJECT:
+        return true;
+    default:
+        return false;
+    }
+
+    return false;
 }

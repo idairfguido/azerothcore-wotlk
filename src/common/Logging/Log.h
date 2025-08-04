@@ -18,11 +18,13 @@
 #ifndef _LOG_H__
 #define _LOG_H__
 
+#include "IoContext.h"
 #include "Define.h"
 #include "LogCommon.h"
 #include "StringFormat.h"
 #include <unordered_map>
 #include <vector>
+#include <memory>
 
 class Appender;
 class Logger;
@@ -119,7 +121,7 @@ private:
     std::string m_logsTimestamp;
 
     Acore::Asio::IoContext* _ioContext;
-    Acore::Asio::Strand* _strand;
+    std::unique_ptr<Acore::Asio::Strand> _strand;
 };
 
 #define sLog Log::instance()

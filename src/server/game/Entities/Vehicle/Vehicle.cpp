@@ -16,6 +16,7 @@
  */
 
 #include "Vehicle.h"
+#include "AreaDefines.h"
 #include "BattlefieldWG.h"
 #include "Log.h"
 #include "MoveSplineInit.h"
@@ -34,15 +35,18 @@ Vehicle::Vehicle(Unit* unit, VehicleEntry const* vehInfo, uint32 creatureEntry) 
         if (uint32 seatId = _vehicleInfo->m_seatID[i])
             if (VehicleSeatEntry const* veSeat = sVehicleSeatStore.LookupEntry(seatId))
             {
-                Seats.insert(std::make_pair(i, VehicleSeat(veSeat)));
+                VehicleSeatAddon const* addon = sObjectMgr->GetVehicleSeatAddon(seatId);
+                Seats.insert(std::make_pair(i, VehicleSeat(veSeat, addon)));
                 if (veSeat->CanEnterOrExit())
                     ++_usableSeatNum;
             }
     }
 
-    // Ulduar demolisher
-    if (vehInfo->m_ID == 338)
-        ++_usableSeatNum;
+    // Set or remove correct flags based on available seats. Will overwrite db data (if wrong).
+    if (_usableSeatNum)
+        _me->SetNpcFlag((_me->IsPlayer() ? UNIT_NPC_FLAG_PLAYER_VEHICLE : UNIT_NPC_FLAG_SPELLCLICK));
+    else
+        _me->RemoveNpcFlag((_me->IsPlayer() ? UNIT_NPC_FLAG_PLAYER_VEHICLE : UNIT_NPC_FLAG_SPELLCLICK));
 
     InitMovementInfoForBase();
 }
@@ -156,7 +160,7 @@ void Vehicle::ApplyAllImmunities()
         //_me->ApplySpellImmune(0, IMMUNITY_STATE, SPELL_AURA_MOD_UNATTACKABLE, true);
         _me->ApplySpellImmune(0, IMMUNITY_MECHANIC, MECHANIC_SHIELD, true);
         _me->ApplySpellImmune(0, IMMUNITY_MECHANIC, MECHANIC_IMMUNE_SHIELD, true);
-        if (_me->GetZoneId() == BATTLEFIELD_WG_ZONEID || _me->ToCreature()->GetSpawnId() || (_me->FindMap() && _me->FindMap()->Instanceable()))
+        if (_me->GetZoneId() == AREA_WINTERGRASP || _me->ToCreature()->GetSpawnId() || (_me->FindMap() && _me->FindMap()->Instanceable()))
             _me->ApplySpellImmune(0, IMMUNITY_STATE, SPELL_AURA_SCHOOL_ABSORB, true);
 
         // ... Resistance, Split damage, Change stats ...
@@ -228,6 +232,15 @@ Unit* Vehicle::GetPassenger(int8 seatId) const
         return nullptr;
 
     return ObjectAccessor::GetUnit(*GetBase(), seat->second.Passenger.Guid);
+}
+
+VehicleSeatAddon const* Vehicle::GetSeatAddonForSeatOfPassenger(Unit const* passenger) const
+{
+    for (SeatMap::const_iterator itr = Seats.begin(); itr != Seats.end(); itr++)
+        if (!itr->second.IsEmpty() && itr->second.Passenger.Guid == passenger->GetGUID())
+            return itr->second.SeatAddon;
+
+    return nullptr;
 }
 
 int8 Vehicle::GetNextEmptySeat(int8 seatId, bool next) const
@@ -356,12 +369,9 @@ bool Vehicle::AddPassenger(Unit* unit, int8 seatId)
         ASSERT(_usableSeatNum);
         --_usableSeatNum;
         if (!_usableSeatNum)
-        {
-            if (_me->IsPlayer())
-                _me->RemoveNpcFlag(UNIT_NPC_FLAG_PLAYER_VEHICLE);
-            else
-                _me->RemoveNpcFlag(UNIT_NPC_FLAG_SPELLCLICK);
-        }
+            _me->RemoveNpcFlag(_me->IsPlayer() ? UNIT_NPC_FLAG_PLAYER_VEHICLE : UNIT_NPC_FLAG_SPELLCLICK);
+        else
+            _me->SetNpcFlag(_me->IsPlayer() ?  UNIT_NPC_FLAG_PLAYER_VEHICLE : UNIT_NPC_FLAG_SPELLCLICK);
     }
 
     if (!_me || !_me->IsInWorld() || _me->IsDuringRemoveFromWorld())
@@ -376,7 +386,14 @@ bool Vehicle::AddPassenger(Unit* unit, int8 seatId)
 
     unit->AddUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT);
     VehicleSeatEntry const* veSeat = seat->second.SeatInfo;
-    unit->m_movementInfo.transport.pos.Relocate(veSeat->m_attachmentOffsetX, veSeat->m_attachmentOffsetY, veSeat->m_attachmentOffsetZ);
+    VehicleSeatAddon const* veSeatAddon = seat->second.SeatAddon;
+
+    float o = veSeatAddon ? veSeatAddon->SeatOrientationOffset : 0.f;
+    float x = veSeat->m_attachmentOffsetX;
+    float y = veSeat->m_attachmentOffsetY;
+    float z = veSeat->m_attachmentOffsetZ;
+
+    unit->m_movementInfo.transport.pos.Relocate(x, y, z, o);
     unit->m_movementInfo.transport.time = 0;
     unit->m_movementInfo.transport.seat = seat->first;
     unit->m_movementInfo.transport.guid = _me->GetGUID();
@@ -410,16 +427,17 @@ bool Vehicle::AddPassenger(Unit* unit, int8 seatId)
         // also adds MOVEMENTFLAG_ROOT
         Movement::MoveSplineInit init(unit);
         init.DisableTransportPathTransformations();
-        init.MoveTo(veSeat->m_attachmentOffsetX, veSeat->m_attachmentOffsetY, veSeat->m_attachmentOffsetZ);
+        init.MoveTo(x, y, z, false, true);
         // Xinef: did not found anything unique in dbc, maybe missed something
         if (veSeat->m_ID == 3566 || veSeat->m_ID == 3567 || veSeat->m_ID == 3568 || veSeat->m_ID == 3570)
         {
-            float x = veSeat->m_attachmentOffsetX, y = veSeat->m_attachmentOffsetY, z = veSeat->m_attachmentOffsetZ, o;
             CalculatePassengerPosition(x, y, z, &o);
             init.SetFacing(_me->GetAngle(x, y));
         }
         else
-            init.SetFacing(0.0f);
+        {
+            init.SetFacing(o);
+        }
 
         init.SetTransportEnter();
         init.Launch();
