@@ -1,14 +1,14 @@
 /*
  * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU Affero General Public License as published by the
- * Free Software Foundation; either version 3 of the License, or (at your
- * option) any later version.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
  * more details.
  *
  * You should have received a copy of the GNU General Public License along
@@ -278,6 +278,7 @@ struct boss_ingvar_the_plunderer : public ScriptedAI
             me->RemoveUnitFlag(UNIT_FLAG_NOT_SELECTABLE);
             AttackStart(me->GetVictim());
             me->GetMotionMaster()->MoveChase(me->GetVictim());
+            me->CastSpell((Unit*)nullptr, SPELL_DREADFUL_ROAR, false);
             Talk(YELL_AGGRO_2);
 
             // schedule Phase 2 abilities
